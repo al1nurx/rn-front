@@ -9,76 +9,76 @@ import {
   StyleSheet,
   TouchableOpacity,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { api } from "@/src/lib/client";
-import { storage } from "@/src/lib/storage";
-import { Book, useBooks } from "@/src/features/home/useBooks";
 import { SafeAreaView } from "react-native-safe-area-context";
 import DatePickerField from "@/src/components/DatePicker";
+import { useBookings } from "@/src/features/home/useBookings";
+import { api } from "@/src/lib/client";
+import { storage } from "@/src/lib/storage";
 
 export default function Index() {
   const router = useRouter();
-
   const [loading, setLoading] = useState(true);
-
   const [user, setUser] = useState<{
+    id: number;
     name: string;
     surname: string;
     email: string;
+    role: "USER" | "ADMIN" | "MANAGER";
   } | null>(null);
 
   const [modalVisible, setModalVisible] = useState(false);
+  const {
+    bookings,
+    isLoading,
+    createBooking,
+    deleteBooking,
+    changeStatus,
+    refetch,
+    isRefetching,
+  } = useBookings();
 
-  const [editingBook, setEditingBook] = useState<Book | null>(null);
-
-  const [title, setTitle] = useState("");
-  const [author, setAuthor] = useState("");
-  const [publishedDate, setPublishedDate] = useState<string | null>(null);
-
-  const { books, isLoading: booksLoading, saveBook, deleteBook } = useBooks();
+  const [spaceId, setSpaceId] = useState("");
+  const [purpose, setPurpose] = useState("");
+  const [startDate, setStartDate] = useState(new Date());
+  const [endDate, setEndDate] = useState(new Date());
 
   useEffect(() => {
     const checkToken = async () => {
       const { token } = await storage.getToken();
-
       if (!token) {
         router.replace("/(auth)/login");
         return;
       }
-
-      const res = await api.get("/api/me");
-
-      setUser(res.data);
-      setLoading(false);
+      try {
+        const res = await api.get("/api/me");
+        setUser(res.data);
+      } catch {
+        router.replace("/(auth)/login");
+      } finally {
+        setLoading(false);
+      }
     };
-
     checkToken();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const resetForm = () => {
-    setTitle("");
-    setAuthor("");
-    setPublishedDate(null);
-    setEditingBook(null);
-    setModalVisible(false);
-  };
-
   const handleSave = () => {
-    if (!title.trim() || !author.trim()) {
-      Alert.alert("Validation", "Title and Author are required");
+    if (!spaceId || !purpose) {
+      Alert.alert("Ошибка", "Заполните все поля");
       return;
     }
 
-    saveBook.mutate({
-      id: editingBook?.id,
-      title,
-      author,
-      published: publishedDate,
+    createBooking.mutate({
+      spaceId,
+      purpose,
+      startTime: startDate.toISOString(),
+      endTime: endDate.toISOString(),
     });
-
-    resetForm();
+    setModalVisible(false);
   };
 
   const handleLogout = async () => {
@@ -86,7 +86,7 @@ export default function Index() {
     router.replace("/(auth)/login");
   };
 
-  if (loading || booksLoading) {
+  if (loading || isLoading) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" />
@@ -101,119 +101,102 @@ export default function Index() {
           <Text style={styles.userName}>
             {user?.name} {user?.surname}
           </Text>
-          <Text style={styles.userEmail}>{user?.email}</Text>
+          <Text style={styles.userEmail}>
+            {user?.email} ({user?.role})
+          </Text>
         </View>
 
         <TouchableOpacity
           style={styles.addButton}
           onPress={() => setModalVisible(true)}
         >
-          <Text style={styles.addButtonText}>+ Add Book</Text>
+          <Text style={styles.addButtonText}>+ Создать бронь</Text>
         </TouchableOpacity>
 
         <FlatList
-          data={books}
+          data={bookings}
           keyExtractor={(item) => item.id.toString()}
-          contentContainerStyle={{ flexGrow: 1, paddingBottom: 120 }}
+          onRefresh={refetch}
+          refreshing={isRefetching}
+          contentContainerStyle={{ flexGrow: 1, marginTop: 10 }}
+          showsVerticalScrollIndicator={false}
           renderItem={({ item }) => (
             <View style={styles.bookCard}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.bookTitle}>{item.title}</Text>
-                <Text style={styles.bookAuthor}>{item.author}</Text>
-
-                <Text
-                  style={[
-                    styles.status,
-                    { color: item.published ? "#16a34a" : "#ef4444" },
-                  ]}
-                >
-                  {item.published ? "Published" : "Draft"}
-                </Text>
+                <Text style={styles.bookTitle}>Место: {item.spaceId}</Text>
+                <Text style={styles.bookAuthor}>Цель: {item.purpose}</Text>
+                <Text style={styles.status}>Статус: {item.status}</Text>
               </View>
 
               <View style={styles.actions}>
-                <TouchableOpacity
-                  style={styles.editBtn}
-                  onPress={() => {
-                    setEditingBook(item);
-                    setTitle(item.title);
-                    setAuthor(item.author);
-                    setModalVisible(true);
-                  }}
-                >
-                  <Text style={styles.btnText}>Edit</Text>
-                </TouchableOpacity>
+                {(user?.role === "MANAGER" || user?.role === "ADMIN") &&
+                  item.status === "PENDING" && (
+                    <TouchableOpacity
+                      style={[styles.editBtn, { backgroundColor: "#16a34a" }]}
+                      onPress={() =>
+                        changeStatus.mutate({ id: item.id, status: "APPROVED" })
+                      }
+                    >
+                      <Text style={styles.btnText}>Одобрить</Text>
+                    </TouchableOpacity>
+                  )}
 
-                <TouchableOpacity
-                  style={styles.deleteBtn}
-                  onPress={() => deleteBook.mutate(item.id)}
-                >
-                  <Text style={styles.btnText}>Delete</Text>
-                </TouchableOpacity>
+                {(user?.role === "MANAGER" ||
+                  user?.role === "ADMIN" ||
+                  item.userId === user?.id) && (
+                  <TouchableOpacity
+                    style={styles.deleteBtn}
+                    onPress={() => deleteBooking.mutate(item.id)}
+                  >
+                    <Text style={styles.btnText}>Удалить</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
           )}
-          ListEmptyComponent={
-            <View
-              style={{
-                flex: 1,
-                justifyContent: "center",
-                alignItems: "center",
-              }}
-            >
-              <Text style={{ fontSize: 16, opacity: 0.5 }}>
-                There are no books
-              </Text>
-            </View>
-          }
         />
 
-        <View style={styles.logoutContainer}>
-          <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-            <Text style={styles.logoutText}>Logout</Text>
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+          <Text style={styles.logoutText}>Выйти</Text>
+        </TouchableOpacity>
 
-        <Modal visible={modalVisible} transparent animationType="fade">
-          <View style={styles.modalBackground}>
+        <Modal visible={modalVisible} transparent animationType="none">
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            style={styles.modalBackground}
+          >
             <View style={styles.modalContainer}>
-              <Text style={styles.modalTitle}>
-                {editingBook ? "Edit Book" : "Create Book"}
-              </Text>
-
+              <Text style={styles.modalTitle}>Новая бронь</Text>
               <TextInput
-                placeholder="Title"
-                value={title}
-                onChangeText={setTitle}
+                placeholder="ID Пространства"
+                value={spaceId}
+                onChangeText={setSpaceId}
+                style={styles.input}
+              />
+              <TextInput
+                placeholder="Цель"
+                value={purpose}
+                onChangeText={setPurpose}
                 style={styles.input}
               />
 
-              <TextInput
-                placeholder="Author"
-                value={author}
-                onChangeText={setAuthor}
-                style={styles.input}
+              <Text>Начало:</Text>
+              <DatePickerField
+                onChange={(date) => setStartDate(new Date(date))}
               />
-
-              <View style={styles.switchRow}>
-                <Text style={{ fontSize: 16, marginBottom: 8 }}>Published</Text>
-                <DatePickerField
-                  onChange={setPublishedDate}
-                  initialValue={editingBook?.published || null}
-                />
-              </View>
+              <Text>Конец:</Text>
+              <DatePickerField
+                onChange={(date) => setEndDate(new Date(date))}
+              />
 
               <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
-                <Text style={styles.saveText}>
-                  {editingBook ? "Update" : "Create"}
-                </Text>
+                <Text style={styles.saveText}>Создать</Text>
               </TouchableOpacity>
-
-              <TouchableOpacity style={styles.cancelBtn} onPress={resetForm}>
-                <Text style={{ color: "#555" }}>Cancel</Text>
+              <TouchableOpacity onPress={() => setModalVisible(false)}>
+                <Text style={{ textAlign: "center" }}>Отмена</Text>
               </TouchableOpacity>
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
       </View>
     </SafeAreaView>
@@ -261,7 +244,7 @@ const styles = StyleSheet.create({
     padding: 14,
     borderRadius: 10,
     alignItems: "center",
-    marginBottom: 20,
+    marginBottom: 10,
   },
 
   addButtonText: {
